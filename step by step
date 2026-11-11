@@ -1,0 +1,110 @@
+# Multi-Tier Web Application on AWS (VPC, ALB, EC2, RDS)
+
+A PHP "waitlist" signup page (Nova) running on an Apache web server in a custom VPC. Traffic comes in through an Application Load Balancer, and signups are stored in an Amazon RDS MySQL database.
+
+## Architecture
+
+```
+Internet
+   │
+   ▼
+Application Load Balancer (HTTP:80)  ──►  Target group (web-sever-tg)
+                                                │
+                                                ▼
+                              EC2 web server (Apache + PHP)  ── public subnet
+                                                │  MySQL (3306)
+                                                ▼
+                              RDS MySQL (teks-database)  ── DB subnet group
+```
+
+| Component | Details |
+|---|---|
+| Region | us-east-1 (N. Virginia) |
+| VPC | `my project vpc`, CIDR `10.0.0.0/16`, DNS resolution and hostnames enabled |
+| Subnets | public subnet 1 `10.0.1.0/24` (us-east-1a), public subnet 2 `10.0.2.0/24` (us-east-1b), private subnet 1 `10.0.3.0/24` (us-east-1a), private subnet 2 `10.0.4.0/24` (us-east-1b) |
+| Routing | `my project igw` attached to the VPC; public route table routes to the IGW; separate private route table for the private subnets |
+| Web server | EC2 Ubuntu instance in public subnet 1, running Apache and PHP |
+| Database | RDS MySQL `teks-database` (db.t3.micro), subnet group `myproject-db-subnet-grp`, security group `RDS-SG`, port 3306 |
+| Load balancer | ALB `web-sever-abl`, listener HTTP:80 forwarding to target group `web-sever-tg` (target type: instance) |
+
+## Steps
+
+### 1. Network (VPC)
+Created a custom VPC with four subnets across two Availability Zones, an Internet Gateway, and separate public and private route tables.
+
+![Subnets](images/01-vpc-subnets.png)
+![VPC details](images/02-vpc-details.png)
+![Resource map](images/03-vpc-resource-map.png)
+![Private route table](images/04-private-route-table.png)
+
+VPC DNS resolution through the Route 53 Resolver:
+
+![Route 53 Resolver VPCs](images/05-route53-resolver-vpcs.png)
+![Resolver rules](images/06-route53-resolver-rules.png)
+
+### 2. Database (RDS)
+Launched an RDS MySQL instance into the DB subnet group built from the private subnets, protected by a dedicated security group.
+
+![RDS available](images/08-rds-database-available.png)
+![RDS endpoint, networking and security](images/09-rds-endpoint-networking-security.png)
+
+### 3. Web server (EC2)
+Connected to the instance with EC2 Instance Connect, installed Apache, PHP and the MySQL client, then enabled and started Apache.
+
+![Install Apache and MySQL client](images/07-ec2-install-apache-mysql-client.png)
+
+### 4. Database setup
+From the web server, connected to RDS with the `mysql` client, created the `waitlist` database and table, and inserted test rows.
+
+![Tables and insert](images/11-mysql-tables-and-insert.png)
+![Table structure](images/12-mysql-describe-waitlist.png)
+
+Table schema:
+
+| Field | Type | Notes |
+|---|---|---|
+| id | int | primary key, auto increment |
+| firstname | varchar(100) | not null |
+| email | varchar(150) | not null |
+| created_at | timestamp | defaults to current time |
+
+### 5. Load balancer (ALB)
+Created an Application Load Balancer with an HTTP:80 listener that forwards to a target group, then registered the EC2 instance as a target.
+
+![Listener](images/13-alb-listener.png)
+![Listener default action](images/14-alb-listener-forward-to-target-group.png)
+![Target group](images/15-target-group.png)
+
+### 6. Result
+The Nova waitlist page is served through the ALB DNS name, and new signups appear in the database and in the "Recent Signups" list.
+
+![Website](images/18-nova-waitlist-website.png)
+![Signups in MySQL](images/19-mysql-signups-final.png)
+
+## Troubleshooting log
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `ERROR 1045 (28000): Access denied for user 'admin'` | Wrong password for the RDS master user | Re-entered the correct credentials / reset the master password |
+| `ERROR 1049: Unknown database 'waitlist'` and `ERROR 1046: No database selected` | Database not created or selected yet | Created the database, then ran `USE waitlist;` |
+| `ERROR 1064` syntax error | Typo in the command (`show datebase`) | Corrected to `SHOW DATABASES;` |
+| PHP `getaddrinfo for your-db-host failed` in the Apache error log | The placeholder DB host was still in `index.php` | Replaced it with the RDS endpoint |
+
+Screenshots:
+![Unknown database](images/10-troubleshoot-unknown-database.png)
+![PHP error log](images/16-troubleshoot-php-db-host-error.png)
+![Signups before the fix](images/17-mysql-signups-before-fix.png)
+
+## Key takeaways
+
+- Designing a VPC with public and private subnets across two AZs.
+- Connecting an app server to a managed database inside a VPC with security groups.
+- Putting an ALB and target group in front of an EC2 web server.
+- Reading Apache and MySQL errors to find the real cause.
+
+## Possible improvements
+
+- Make the database not publicly accessible and allow port 3306 only from the web server's security group.
+- Run web servers in an Auto Scaling group across both AZs.
+- Move DB credentials to AWS Secrets Manager and add HTTPS with an ACM certificate.
+- Rebuild the whole stack with Terraform.
